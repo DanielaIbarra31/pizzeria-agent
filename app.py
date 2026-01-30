@@ -1,46 +1,75 @@
 import os
+import traceback
 from flask import Flask, request, jsonify
 import google.generativeai as genai
 
 app = Flask(__name__)
 
-# 1. Configurar Gemini
-# Render buscará la clave en las "Environment Variables"
+# --- CONFIGURACIÓN ---
+# Obtener API Key
 GENAI_API_KEY = os.environ.get("GEMINI_API_KEY")
-genai.configure(api_key=GENAI_API_KEY)
 
-# 2. Instrucciones de la Pizzería (El Prompt)
-INSTRUCCIONES = """
-Eres Luigi, el asistente de la Pizzería 'La Mía'.
-Tu menú:
-- Pizza Peperoni ($10)
-- Pizza Hawaiana ($11)
-- Pizza 4 Quesos ($12)
-Objetivo: Tomar el pedido, preguntar dirección y confirmar precio total.
-Sé breve y amable. No uses markdown, solo texto plano.
-"""
+if not GENAI_API_KEY:
+    print("ERROR: No encontré la GEMINI_API_KEY en las variables de entorno.")
 
-model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=INSTRUCCIONES)
-chat = model.start_chat(history=[])
+# Configurar Gemini
+try:
+    genai.configure(api_key=GENAI_API_KEY)
+    INSTRUCCIONES = """
+    Eres Luigi, de Pizzería La Mía.
+    Menú: Peperoni $10, Hawaiana $11, 4 Quesos $12.
+    Tu misión: Saludar, tomar el pedido, preguntar dirección y confirmar.
+    Sé breve.
+    """
+    model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=INSTRUCCIONES)
+except Exception as e:
+    print(f"Error configurando Gemini: {e}")
+
+# Memoria Volátil (Se borra si el servidor se reinicia)
+sesiones = {}
 
 @app.route('/', methods=['GET'])
 def home():
-    return "¡Hola! El agente de la pizzería está vivo y esperando pedidos."
+    return "Luigi (Versión Memoria) está activo y sin errores."
 
 @app.route('/chat', methods=['POST'])
-def chat_endpoint():
-    data = request.json
-    mensaje_usuario = data.get('message', '')
+def chat():
+    try:
+        # 1. Validar que nos envíen JSON
+        if not request.is_json:
+            return jsonify({"error": "El cuerpo de la petición no es JSON"}), 400
 
-    if not mensaje_usuario:
-        return jsonify({"error": "No enviaste mensaje"}), 400
+        data = request.json
+        
+        # 2. Obtener datos con valores por defecto para no romper
+        msg = data.get('message')
+        user_id = data.get('user_id', 'anonimo') # Si no hay ID, usa 'anonimo'
 
-    # Enviar mensaje a Gemini
-    response = chat.send_message(mensaje_usuario)
-    
-    return jsonify({
-        "respuesta": response.text
-    })
+        print(f"Mensaje recibido de {user_id}: {msg}") # Esto saldrá en los logs
+
+        if not msg:
+            return jsonify({"error": "No enviaste el campo 'message'"}), 400
+
+        # 3. Gestión de Memoria
+        if user_id not in sesiones:
+            print(f"Creando nueva sesión para {user_id}")
+            sesiones[user_id] = model.start_chat(history=[])
+
+        chat_session = sesiones[user_id]
+
+        # 4. Enviar a Gemini
+        response = chat_session.send_message(msg)
+        
+        return jsonify({
+            "respuesta": response.text,
+            "debug_id": user_id 
+        })
+
+    except Exception as e:
+        # Si algo falla, imprimimos el error real en los logs de Render
+        print("!!!!!! ERROR EN EL SERVIDOR !!!!!!!")
+        traceback.print_exc()
+        return jsonify({"error": f"Ocurrió un error interno: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
